@@ -13,10 +13,11 @@ Exchange messages between separate active `pi` terminal sessions with zero serve
 
 - ⚡ **Zero-Server P2P IPC**: Communicates directly through local filesystem mailboxes (`~/.pi/messages/`). Fast, secure, and offline.
 - 🛡️ **Guaranteed Delivery Queueing**: Uses `deliverAs: "followUp"` so incoming messages are never dropped or rejected, even while the recipient agent is busy running shell tools or streaming responses.
-- 📜 **Full Multi-Line & Markdown Integrity**: Payloads are Base64-enveloped across the wire (`b64:`), preserving syntax indentation, code blocks, tables, and emojis intact.
+- 📜 **Full Multi-Line & Markdown Integrity**: Payloads travel as JSON envelopes in one-file-per-message spools, written temp-then-rename so delivery is atomic and concurrent senders never clobber each other. Indentation, code blocks, tables and emojis survive intact.
+- 🔒 **Owner-Private Spool**: `~/.pi/messages` is created `0700` (files `0600`) and ownership-checked, since incoming text is injected into the agent as a user message.
 - 🤖 **Claude Code-Style Agent Tools**: Your AI agent can autonomously discover peers and message them (`list_session_peers`, `send_session_message`).
 - 💬 **Human TUI Commands**: Direct user commands to message sessions, rename mailboxes, list active peers, or view buffered inboxes (`/send`, `/peers`, `/mset`, `/inbox`).
-- 🛑 **Echo Suppression**: Clean one-shot question-and-answer resolution without infinite cascades or goodbye loops.
+- 🛑 **Safe Auto-Reply**: Off by default (`/autoreply on`), capped chain depth, and correlated to the turn the incoming message actually triggered — a locally typed prompt disarms it, so your own answers never leak to a peer.
 - 🧹 **Dead-Peer Self-Pruning**: Uses OS-level process checks (`process.kill(pid, 0)`) to instantly clean up stale peer records when a terminal window is closed.
 
 ---
@@ -72,7 +73,7 @@ From `frontend`:
 | `/send` | `/send <peer> <message>` | Sends a message directly to another session. |
 | `/mset` | `/mset <name>` | Sets a friendly name for the current session (defaults to `sess-<PID>`). |
 | `/inbox` | `/inbox` | Displays any waiting messages in your local mailbox. |
-| `/autoreply` | `/autoreply on\|off` | Toggles automatic response forwarding (useful for autonomous multi-turn debates). |
+| `/autoreply` | `/autoreply on\|off` | Toggles automatic response forwarding (off by default; chains are depth-capped). |
 
 ### 2. AI Agent Tools (Claude Code-Style)
 
@@ -98,22 +99,23 @@ Agent: calls send_session_message(peer: "backend", message: "What migrations hav
 │  /send bob ...   │                       │  (Receives Turn) │
 └────────┬─────────┘                       └────────▲─────────┘
          │                                          │
-         │ writes to ~/.pi/messages/bob.in          │ drains bob.in
+         │ writes to ~/.pi/messages/bob.d/          │ drains bob.d/
          ▼                                          │
 ┌───────────────────────────────────────────────────┴─────────┐
 │              Local Mailbox Directory (~/.pi/messages/)      │
 │  ├── alice.peer (PID heartbeat)                             │
 │  ├── bob.peer   (PID heartbeat)                             │
-│  ├── alice.in   (FIFO mailbox)                              │
-│  └── bob.in     (FIFO mailbox)                              │
+│  ├── alice.d/   (one file per message)                      │
+│  └── bob.d/     (one file per message)                      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 1. **Presence**: Each session writes a `.peer` file upon starting. When `list_peers` runs, dead processes are pruned instantly using OS signals.
-2. **Wire Protocol**: Messages are exchanged via line-delimited records:
-   ```text
-   recipient <TAB> sender <TAB> depth <TAB> b64:<base64-payload>
+2. **Wire Protocol**: Each message is a versioned JSON envelope in its own file:
+   ```json
+   { "v": 1, "to": "bob", "from": "alice", "depth": 0, "kind": "user", "text": "..." }
    ```
+   Senders write `.tmp-*` then `rename()` to `<stamp>.msg`; the receiver claims each file by `rename()` before delivering, so a message is delivered exactly once even with multiple drainers.
 3. **Queueing**: Receivers poll their inbox every 1000ms. Injections into Pi use `deliverAs: "followUp"`, guaranteeing execution whether the agent is idle or busy.
 
 ---
