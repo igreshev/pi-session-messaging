@@ -1,6 +1,6 @@
 {
   "name": "pi-session-messaging",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Peer-to-peer cross-session messaging for Pi CLI (Claude Code style)",
   "keywords": [
     "pi-package",
