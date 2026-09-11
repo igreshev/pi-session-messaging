@@ -282,7 +282,14 @@ function drainInbox(pi: ExtensionAPI): void {
 		const body =
 			env.text.length > MAX_MESSAGE_CHARS ? `${env.text.slice(0, MAX_MESSAGE_CHARS)}\n\n[truncated]` : env.text;
 		const label = env.from ? `@${env.from}` : "@peer";
-		const display = `[message from ${label}] ${body.trim()}`;
+		// Without an explicit routing hint the model answers in its own terminal
+		// and the sender never hears back. Only add it when a reply is possible
+		// and would not be sent automatically.
+		const hint =
+			env.from && env.from !== myMailbox && !autoReplyEnabled && env.kind !== "auto"
+				? `\n\n(To answer ${label}, call send_session_message with peer="${env.from}". Text you write here is NOT visible to them.)`
+				: "";
+		const display = `[message from ${label}] ${body.trim()}${hint}`;
 
 		// Register the pending auto-reply *before* injecting: the `input` event
 		// fires during sendUserMessage, so arming afterwards would always lose
