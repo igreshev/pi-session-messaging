@@ -284,9 +284,19 @@ function drainInbox(pi: ExtensionAPI): void {
 		const label = env.from ? `@${env.from}` : "@peer";
 		const display = `[message from ${label}] ${body.trim()}`;
 
+		// Register the pending auto-reply *before* injecting: the `input` event
+		// fires during sendUserMessage, so arming afterwards would always lose
+		// the race and no reply would ever be sent.
+		const wantsReply =
+			autoReplyEnabled && env.kind !== "auto" && env.depth < MAX_AUTO_DEPTH && !!env.from && env.from !== myMailbox;
+		if (wantsReply) {
+			pendingDeliveries.set(display, { peer: env.from, depth: env.depth + 1 });
+		}
+
 		try {
 			pi.sendUserMessage(display, { deliverAs: "followUp" });
 		} catch {
+			pendingDeliveries.delete(display);
 			// Put it back so the next poll retries instead of losing it.
 			try {
 				fs.renameSync(claimed, src);
@@ -305,12 +315,6 @@ function drainInbox(pi: ExtensionAPI): void {
 		if (currentCtx?.hasUI) {
 			const preview = body.length > 50 ? `${body.slice(0, 50)}...` : body;
 			currentCtx.ui.notify(`[${env.from}] ${preview}`, "info");
-		}
-
-		// Auto-reply is armed only when the matching `input` event arrives, so
-		// the reply is tied to the turn this message triggered.
-		if (autoReplyEnabled && env.kind !== "auto" && env.depth < MAX_AUTO_DEPTH && env.from && env.from !== myMailbox) {
-			pendingDeliveries.set(display, { peer: env.from, depth: env.depth + 1 });
 		}
 	}
 }
