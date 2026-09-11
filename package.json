@@ -44,7 +44,7 @@
     "tsconfig.json"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

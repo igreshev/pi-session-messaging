@@ -13,7 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "22"]
+        # pi (@earendil-works/pi-coding-agent) requires node >=22.19.0;
+        # on older majors npm skips the peer deps and the types disappear.
+        node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
