@@ -20,7 +20,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 
 const MAIL_DIR = process.env.PI_MESSAGES_DIR || path.join(os.homedir(), ".pi", "messages");
+/** Inbox poll interval. */
 const POLL_MS = 1000;
+/** Presence heartbeat interval, decoupled from the inbox poll. */
+const PRESENCE_MS = 5000;
+/** A .peer file older than this is considered abandoned (used for peers we cannot probe). */
+const PRESENCE_STALE_MS = PRESENCE_MS * 4;
 /** Auto-reply chain limit. Each step costs an LLM turn in both sessions. */
 const MAX_AUTO_DEPTH = 4;
 const MAX_AUTO_REPLY_CHARS = 4000;
@@ -30,6 +35,21 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
 const WIRE_VERSION = 1;
+/** Presence record version. v1 was `name<TAB>pid<TAB>host`. */
+const PEER_VERSION = 2;
+
+/**
+ * Boot-unique token. A recycled pid can collide with a dead session's record,
+ * so liveness also requires the token to match what that process published.
+ */
+const BOOT_TOKEN = `${Math.floor(Date.now() - process.uptime() * 1000)}-${crypto.randomBytes(4).toString("hex")}`;
+
+interface PeerRecord {
+	name: string;
+	pid: number;
+	host: string;
+	token: string | null;
+}
 
 interface Envelope {
 	v: number;
@@ -51,6 +71,7 @@ const pendingDeliveries = new Map<string, { peer: string; depth: number }>();
 
 let currentCtx: ExtensionContext | null = null;
 let watchTimer: NodeJS.Timeout | null = null;
+let presenceTimer: NodeJS.Timeout | null = null;
 let seq = 0;
 
 function defaultMailbox(): string {
@@ -98,17 +119,42 @@ function ensureDir(): boolean {
 	}
 }
 
+/**
+ * Publish presence atomically (temp file + rename). A plain writeFileSync lets
+ * readers observe a truncated record, which parses as pid NaN and makes a live
+ * session look dead.
+ */
 function writePresence(): void {
 	if (!myMailbox) return;
 	if (!ensureDir()) return;
+	const line = `v${PEER_VERSION}\t${myMailbox}\t${process.pid}\t${os.hostname()}\t${BOOT_TOKEN}\n`;
+	const tmp = path.join(MAIL_DIR, `.peertmp-${process.pid}-${(seq++).toString(36)}`);
 	try {
-		fs.writeFileSync(peerFile(myMailbox), `${myMailbox}\t${process.pid}\t${os.hostname()}\n`, {
-			encoding: "utf8",
-			mode: FILE_MODE,
-		});
+		fs.writeFileSync(tmp, line, { encoding: "utf8", mode: FILE_MODE });
+		fs.renameSync(tmp, peerFile(myMailbox));
 	} catch {
-		/* ignore */
+		try {
+			fs.unlinkSync(tmp);
+		} catch {
+			/* ignore */
+		}
 	}
+}
+
+/** Parse a v2 record, falling back to the v1 `name<TAB>pid<TAB>host` layout. */
+function parsePeerRecord(raw: string): PeerRecord | null {
+	const parts = raw.trim().split("\t");
+	if (parts.length === 0 || !parts[0]) return null;
+	const versioned = /^v(\d+)$/.exec(parts[0]);
+	const f = versioned ? parts.slice(1) : parts;
+	const pid = Number(f[1]);
+	if (!f[0] || !Number.isInteger(pid) || pid <= 0) return null;
+	return {
+		name: f[0],
+		pid,
+		host: f[2] ?? "",
+		token: versioned && f[3] ? f[3] : null,
+	};
 }
 
 function removeTree(p: string): void {
@@ -138,27 +184,49 @@ function listPeers(): string[] {
 		const mbox = name.slice(0, -".peer".length);
 		if (mbox === myMailbox) continue;
 		const p = peerFile(mbox);
+
+		let rec: PeerRecord | null = null;
+		let ageMs = 0;
 		try {
-			const parts = fs.readFileSync(p, "utf8").trim().split("\t");
-			const pid = Number(parts[1]);
-			const host = parts[2];
-			if (host === os.hostname() && Number.isFinite(pid) && pid > 0) {
-				try {
-					process.kill(pid, 0);
-				} catch (e) {
-					if ((e as NodeJS.ErrnoException).code === "ESRCH") {
-						try {
-							fs.unlinkSync(p);
-						} catch {
-							/* ignore */
-						}
-						removeTree(boxDir(mbox));
-						continue;
-					}
-				}
-			}
+			rec = parsePeerRecord(fs.readFileSync(p, "utf8"));
+			ageMs = Date.now() - fs.statSync(p).mtimeMs;
 		} catch {
 			continue;
+		}
+		if (!rec) continue;
+
+		const prune = (): void => {
+			try {
+				fs.unlinkSync(p);
+			} catch {
+				/* ignore */
+			}
+			removeTree(boxDir(mbox));
+		};
+
+		if (rec.host === os.hostname()) {
+			// Same host: probe the pid directly. ESRCH means gone; EPERM means the
+			// process exists under another uid, so treat it as alive.
+			let alive = true;
+			try {
+				process.kill(rec.pid, 0);
+			} catch (e) {
+				if ((e as NodeJS.ErrnoException).code === "ESRCH") alive = false;
+			}
+			// A live pid with a stale heartbeat is a recycled pid, not our session.
+			if (alive && rec.token && ageMs > PRESENCE_STALE_MS) alive = false;
+			if (!alive) {
+				prune();
+				continue;
+			}
+		} else if (ageMs > PRESENCE_STALE_MS) {
+			// Other host (or unknown): pids are not probeable, so fall back to the
+			// heartbeat age. v1 records have no heartbeat guarantee, so only prune
+			// them once they are well past the window.
+			if (rec.token || ageMs > PRESENCE_STALE_MS * 3) {
+				prune();
+				continue;
+			}
 		}
 		out.push(mbox);
 	}
@@ -339,6 +407,14 @@ function pruneOrphanBoxes(): void {
 		return;
 	}
 	for (const name of names) {
+		if (name.startsWith(".peertmp-")) {
+			try {
+				fs.unlinkSync(path.join(MAIL_DIR, name));
+			} catch {
+				/* ignore */
+			}
+			continue;
+		}
 		if (name.endsWith(".in")) {
 			try {
 				fs.unlinkSync(path.join(MAIL_DIR, name));
@@ -356,19 +432,25 @@ function pruneOrphanBoxes(): void {
 }
 
 function startWatcher(pi: ExtensionAPI): void {
-	if (watchTimer) return;
 	ensureDir();
-	watchTimer = setInterval(() => {
-		writePresence();
-		drainInbox(pi);
-	}, POLL_MS);
-	watchTimer.unref();
+	if (!watchTimer) {
+		watchTimer = setInterval(() => drainInbox(pi), POLL_MS);
+		watchTimer.unref();
+	}
+	if (!presenceTimer) {
+		presenceTimer = setInterval(writePresence, PRESENCE_MS);
+		presenceTimer.unref();
+	}
 }
 
 function stopWatcher(): void {
 	if (watchTimer) {
 		clearInterval(watchTimer);
 		watchTimer = null;
+	}
+	if (presenceTimer) {
+		clearInterval(presenceTimer);
+		presenceTimer = null;
 	}
 }
 
@@ -605,6 +687,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{ type: "text", text: `No live session named @${to}. Call list_session_peers for current peers.` },
 					],
+					details: { peer: to, delivered: false },
 					isError: true,
 				};
 			}
@@ -612,11 +695,15 @@ export default function (pi: ExtensionAPI) {
 			if (!res.ok) {
 				return {
 					content: [{ type: "text", text: `Failed to send to ${to}: ${res.error}` }],
+					details: { peer: to, delivered: false },
 					isError: true,
 				};
 			}
 			if (armedReply?.peer === to) armedReply = null;
-			return { content: [{ type: "text", text: `Message sent to @${to}.` }] };
+			return {
+				content: [{ type: "text", text: `Message sent to @${to}.` }],
+				details: { peer: to, delivered: true },
+			};
 		},
 	});
 
@@ -628,7 +715,10 @@ export default function (pi: ExtensionAPI) {
 		async execute() {
 			const peers = listPeers();
 			if (peers.length === 0) {
-				return { content: [{ type: "text", text: "No other active sessions currently reachable." }] };
+				return {
+					content: [{ type: "text", text: "No other active sessions currently reachable." }],
+					details: { peers },
+				};
 			}
 			return {
 				content: [{ type: "text", text: `Available sessions: ${peers.map((p) => `@${p}`).join(", ")}` }],

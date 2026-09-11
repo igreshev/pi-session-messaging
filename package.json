@@ -1,6 +1,6 @@
 {
   "name": "pi-session-messaging",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Peer-to-peer cross-session messaging for Pi CLI (Claude Code style)",
   "keywords": [
     "pi-package",
@@ -25,13 +25,33 @@
   },
   "homepage": "https://github.com/igreshev/pi-session-messaging#readme",
   "pi": {
-    "extensions": ["./extensions/index.ts"]
+    "extensions": [
+      "./extensions/index.ts"
+    ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE",
+    "package.json",
+    "tsconfig.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node test/all.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.3"
   }
 }

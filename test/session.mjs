@@ -28,7 +28,12 @@ fire("session_start", { reason: "new" });
 
 process.on("message", async (m) => {
   if (m.cmd) { await commands.get(m.cmd).handler(m.args ?? "", ctx); }
-  if (m.tool) { log({ ev: "tool", r: await tools.get(m.tool).execute("id", m.params) }); }
+  if (m.tool) {
+    const r = await tools.get(m.tool).execute("id", m.params);
+    log({ ev: "tool", r });
+    process.send?.({ ev: "tool", r });
+    return;
+  }
   if (m.assistant) { fire("message_end", { message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: m.assistant }] } }); }
   if (m.localPrompt) { fire("input", { text: m.localPrompt, source: "interactive" }); }
   if (m.bulk) { log({ ev: "bulkCount", n: globalThis.__bulk ?? 0 }); }
