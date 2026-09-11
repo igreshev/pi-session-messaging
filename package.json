@@ -1,0 +1,37 @@
+{
+  "name": "pi-session-messaging",
+  "version": "1.0.0",
+  "description": "Peer-to-peer cross-session messaging for Pi CLI (Claude Code style)",
+  "keywords": [
+    "pi-package",
+    "cross-session",
+    "multi-agent",
+    "ipc",
+    "claude-code",
+    "messaging"
+  ],
+  "author": {
+    "name": "Ivo Greshev",
+    "email": "greshev@icloud.com",
+    "url": "https://github.com/igreshev"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/igreshev/pi-session-messaging.git"
+  },
+  "bugs": {
+    "url": "https://github.com/igreshev/pi-session-messaging/issues"
+  },
+  "homepage": "https://github.com/igreshev/pi-session-messaging#readme",
+  "pi": {
+    "extensions": ["./extensions/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
